@@ -397,7 +397,8 @@ function wxKind(p,cloud){
 const wxOf=k=>WX.find(w=>w.k===k)||WX[1];
 
 async function loadPrev(S){
-  const v=["temperature_2m_previous_day1","precipitation_previous_day1","temperature_2m_previous_day2","precipitation_previous_day2"].join(",");
+  const v=["temperature_2m_previous_day1","precipitation_previous_day1","shortwave_radiation_previous_day1",
+           "temperature_2m_previous_day2","precipitation_previous_day2","shortwave_radiation_previous_day2"].join(",");
   const base="https://previous-runs-api.open-meteo.com/v1/forecast?latitude="+LAT+"&longitude="+LON+
     "&hourly="+v+"&timezone=Asia%2FTokyo&past_days=9&forecast_days=1&models=";
   await Promise.all(MODELS.map(async m=>{
@@ -406,14 +407,14 @@ async function loadPrev(S){
 }
 async function loadObs(S){
   const tbl=await getJSON("https://www.jma.go.jp/bosai/amedas/const/amedastable.json");
-  let best=null,bd=1e9;
+  let best=null,bd=1e9,sun=null,bs=1e9;
   for(const [code,s] of Object.entries(tbl)){
-    if(!s.elems||s.elems[0]!=="1"||s.elems[1]!=="1")continue;
     const la=s.lat[0]+s.lat[1]/60, lo=s.lon[0]+s.lon[1]/60;
     const d=Math.hypot(la-LAT,(lo-LON)*Math.cos(LAT*Math.PI/180));
-    if(d<bd){bd=d;best={code,name:s.kjName,km:d*111};}
+    if(s.elems&&s.elems[0]==="1"&&s.elems[1]==="1"&&d<bd){bd=d;best={code,name:s.kjName,km:d*111};}
+    if(s.elems&&s.elems[6]==="1"&&d<bs){bs=d;sun={code,name:s.kjName,km:d*111};}
   }
-  S.station=best;
+  S.station=best; S.sunStation=sun;
   const obs={}; const now=jstNow(); const jobs=[];
   for(let k=1;k<=8;k++){
     const d=new Date(now.getTime()-k*86400e3);
@@ -423,13 +424,79 @@ async function loadObs(S){
         for(const [t,e] of Object.entries(j)){
           if(t.slice(10,14)!=="0000")continue;
           const iso=t.slice(0,4)+"-"+t.slice(4,6)+"-"+t.slice(6,8)+"T"+t.slice(8,10)+":00";
-          obs[iso]={t:e.temp?e.temp[0]:null,p:e.precipitation1h?e.precipitation1h[0]:null};
+          const o=obs[iso]||(obs[iso]={});
+          o.t=e.temp?e.temp[0]:null; o.p=e.precipitation1h?e.precipitation1h[0]:null;
+          if(e.sun1h)o.s=e.sun1h[0];
         }
       }).catch(()=>{}));
     }
   }
+  // 日照時間が別地点の場合は、その地点からも取得
+  if(sun&&(!best||sun.code!==best.code)){
+    const jobs2=[];
+    for(let k=1;k<=8;k++){
+      const d=new Date(now.getTime()-k*86400e3);
+      const key=d.getUTCFullYear()+pad(d.getUTCMonth()+1)+pad(d.getUTCDate());
+      for(const hh of ["06","09","12","15"]){
+        jobs2.push(getJSON("https://www.jma.go.jp/bosai/amedas/data/point/"+sun.code+"/"+key+"_"+hh+".json").then(j=>{
+          for(const [t,e] of Object.entries(j)){
+            if(t.slice(10,14)!=="0000"||!e.sun1h)continue;
+            const iso=t.slice(0,4)+"-"+t.slice(4,6)+"-"+t.slice(6,8)+"T"+t.slice(8,10)+":00";
+            (obs[iso]||(obs[iso]={})).s=e.sun1h[0];
+          }
+        }).catch(()=>{}));
+      }
+    }
+    jobs.push(...jobs2);
+  }
   await Promise.all(jobs);
   S.obs=obs;
+}
+
+// ===== 日射の的中（案②：晴天比と日照割合の誤差） =====
+function solarElev(iso,lat,lon){                 // isoは日本時間 "YYYY-MM-DDTHH:00"
+  const y=+iso.slice(0,4),mo=+iso.slice(5,7),da=+iso.slice(8,10),hh=+iso.slice(11,13),mi=+iso.slice(14,16)||0;
+  const utc=Date.UTC(y,mo-1,da,hh,mi)-9*3600e3;                  // JST→UTC
+  const d=new Date(utc);
+  const start=Date.UTC(y,0,1), doy=Math.floor((utc-start)/86400e3)+1;
+  const frac=(d.getUTCHours()+d.getUTCMinutes()/60)/24;
+  const g=2*Math.PI/365*(doy-1+frac);
+  const eqt=229.18*(0.000075+0.001868*Math.cos(g)-0.032077*Math.sin(g)-0.014615*Math.cos(2*g)-0.040849*Math.sin(2*g)); // 分
+  const dec=0.006918-0.399912*Math.cos(g)+0.070257*Math.sin(g)-0.006758*Math.cos(2*g)+0.000907*Math.sin(2*g)
+           -0.002697*Math.cos(3*g)+0.00148*Math.sin(3*g);
+  const tst=(d.getUTCHours()*60+d.getUTCMinutes())+eqt+4*lon;    // 真太陽時（分）
+  const ha=(tst/4-180)*Math.PI/180;
+  const la=lat*Math.PI/180;
+  const sinE=Math.sin(la)*Math.sin(dec)+Math.cos(la)*Math.cos(dec)*Math.cos(ha);
+  return Math.asin(Math.max(-1,Math.min(1,sinE)))*180/Math.PI;
+}
+function clearSky(elev){                                        // Haurwitzの式（W/m²）
+  if(elev<=0)return 0;
+  const cz=Math.sin(elev*Math.PI/180);
+  return 1098*cz*Math.exp(-0.059/cz);
+}
+function computeSolarAccuracy(){
+  const res={}; const w={}; let sum=0;
+  for(const m of MODELS){
+    const P=S.prev[m.id]; let n=0,err=0;
+    if(P&&S.obs&&P.shortwave_radiation_previous_day1){
+      P.time.forEach((t,i)=>{
+        const o=S.obs[t]; if(!o||o.s==null)return;
+        const R=P.shortwave_radiation_previous_day1[i]; if(R==null)return;
+        const el=solarElev(t,LAT,LON); if(el<10)return;          // 太陽が低い時間は除外
+        const Rc=clearSky(el); if(Rc<50)return;
+        const kt=Math.max(0,Math.min(1.2,R/Rc));                 // 予報の晴天比
+        const f=Math.max(0,Math.min(1,o.s));                     // 実測の日照割合（時間）
+        err+=Math.abs(kt-f); n++;
+      });
+    }
+    res[m.id]={n,mae:n?err/n:null};
+    w[m.id]=(!S.fc[m.id])?0:(n>=12?1/(0.1+res[m.id].mae):1);
+    sum+=w[m.id];
+  }
+  for(const k in w)w[k]=sum?w[k]/sum:0;
+  S.solarAcc=res; S.solarWeights=w;
+  S.solarSrc=MODELS.some(m=>res[m.id].n>=12)?"sun":"flat";
 }
 
 function computeAccuracy(){
@@ -465,6 +532,7 @@ function computeAccuracy(){
     sum+=w[m.id];
   }
   for(const k in w)w[k]=sum?w[k]/sum:0;
+  computeSolarAccuracy();
   S.acc=res; S.weights=w; S.weightSrc=(S.obs&&Object.keys(S.obs).length)?"acc":"flat";
 }
 
@@ -474,19 +542,20 @@ function renderAcc(){
     $("accBody").innerHTML='<span class="err">アメダスの実測データを取得できなかったため、的中実績は計算できませんでした（総合予報は4モデルの単純平均になります）。</span>';
     return;
   }
-  let h=`<div class="note">比較地点：アメダス「${S.station.name}」（検索地点から約${Math.round(S.station.km)}km）／過去8日間の7〜17時</div>
-  <div class="scroll"><table><tr><th>モデル</th><th>雨あり・なしの<br>的中率（前日予報）</th><th>実際の雨を<br>当てた数</th><th>気温の誤差<br>（前日）</th><th>気温の誤差<br>（2日前）</th><th>総合予報での<br>重み</th></tr>`;
+  let h=`<div class="note">比較地点：アメダス「${S.station.name}」（検索地点から約${Math.round(S.station.km)}km）${S.sunStation&&S.station&&S.sunStation.code!==S.station.code?`／日照は「${S.sunStation.name}」（約${Math.round(S.sunStation.km)}km）`:""}／過去8日間の7〜17時</div>
+  <div class="scroll"><table><tr><th>モデル</th><th>雨あり・なしの<br>的中率（前日予報）</th><th>実際の雨を<br>当てた数</th><th>日射の誤差<br>（日照との差）</th><th>気温の誤差<br>（前日）</th><th>気温の誤差<br>（2日前）</th><th>総合予報での<br>重み</th></tr>`;
   const best=MODELS.filter(m=>S.acc[m.id][1].n).sort((a,b)=>S.weights[b.id]-S.weights[a.id])[0];
   for(const m of MODELS){
     const a=S.acc[m.id][1],b=S.acc[m.id][2],w=S.weights[m.id]||0;
     h+=`<tr><td>${m.name}${best&&best.id===m.id?" ★":""}</td>
       <td>${a.hit==null?"-":Math.round(a.hit*100)+"%"}</td>
       <td>${a.rainObs?a.rainCaught+"/"+a.rainObs+"時間":"雨なし"}</td>
+      <td>${(S.solarAcc&&S.solarAcc[m.id]&&S.solarAcc[m.id].n>=12)?(Math.round(S.solarAcc[m.id].mae*100)+"%")+`<br><span class="note">${S.solarAcc[m.id].n}時間</span>`:"-"}</td>
       <td>${a.tmae==null?"-":"±"+f1(a.tmae)+"℃"}</td>
       <td>${b.tmae==null?"-":"±"+f1(b.tmae)+"℃"}</td>
       <td><div class="bar"><i style="width:${Math.round(w*100)}%"></i></div>${Math.round(w*100)}%</td></tr>`;
   }
-  h+=`</table></div><div class="note" style="margin-top:6px">★は最近このゴルフ場で最も成績が良いモデル。期間中に雨が少ないと、雨の的中率は差が出にくくなります。</div>`;
+  h+=`</table></div><div class="note" style="margin-top:6px">★は最近この地点で最も成績が良いモデル。期間中に雨が少ないと、雨の的中率は差が出にくくなります。</div>`;
   $("accBody").innerHTML=h;
 }
 
@@ -610,7 +679,8 @@ function rowsForDay(){
       const p=H.precipitation[j],rr=H.shortwave_radiation[j],cc=H.cloud_cover[j],tt=H.temperature_2m[j],sp=H.wind_speed_10m[j];
       if(p==null&&rr==null&&tt==null)continue;
       per[m.id]={p,r:rr,c:cc,t:tt,s:sp,d:H.wind_direction_10m[j],k:wxKind(p,cc)};
-      const w=S.weights[m.id]||0; if(!w)continue;
+      const W=(METRIC==="solar"&&S.solarWeights)?S.solarWeights:S.weights;
+      const w=W[m.id]||0; if(!w)continue;
       wsum+=w; wp+=w*(p||0); wr+=w*(rr||0); wc+=w*(cc==null?0:cc); wt+=w*(tt||0); ws+=w*(sp||0);
       if(m.id==="jma_seamless"||wd==null)wd=H.wind_direction_10m[j];
     }
@@ -677,7 +747,9 @@ function render(){
   $("summary").innerHTML=head+body;
   drawChart(rows);
   drawTable(rows);
-  $("wnote").innerHTML=(S.weightSrc==="acc"?"「総合」は直近8日の実績で重み付けした平均です。":"「総合」は4モデルの平均です。")+
+  $("wnote").innerHTML=(METRIC==="solar"
+      ? (S.solarSrc==="sun"?"「総合」は直近8日のアメダス日照時間との誤差で重み付けした平均です。":"「総合」は4モデルの平均です。")
+      : (S.weightSrc==="acc"?"「総合」は直近8日の実績で重み付けした平均です。":"「総合」は4モデルの平均です。"))+
     `　風：${dirJa(rows[0].d)} ${f1(rows[0].s)}m/s〜最大 ${f1(smax)}m/s`;
   renderAcc();
 }
