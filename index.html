@@ -75,6 +75,11 @@ td.hl{background:var(--rainbg)!important;color:var(--rain);font-weight:700}
 td.hs{background:var(--solarbg)!important;color:var(--solar);font-weight:700}
 td.lead{text-align:right;color:var(--sub);font-weight:600}
 .scroll{overflow-x:auto}
+#fc{font-size:11.5px;table-layout:fixed;width:100%}
+#fc th,#fc td{padding:0 2px;line-height:1.5;white-space:nowrap}
+#fc th{font-size:10px;line-height:1.15;padding:2px}
+#fc .wd{font-size:10px;color:var(--sub);margin-right:2px}
+#fc th:first-child,#fc td:first-child{width:38px}
 .bar{height:5px;background:var(--line2);border-radius:1px;overflow:hidden;min-width:48px}
 .bar i{display:block;height:100%;background:var(--accent)}
 .chart{position:relative;margin-top:8px}
@@ -251,8 +256,8 @@ a{color:var(--accent)}
 <script>
 const MODELS=[
   {id:"jma_seamless",name:"気象庁"},
-  {id:"ecmwf_ifs",name:"ヨーロッパ"},
-  {id:"gfs_seamless",name:"アメリカ"},
+  {id:"ecmwf_ifs",name:"EU"},
+  {id:"gfs_seamless",name:"US"},
   {id:"icon_seamless",name:"ドイツ"}
 ];
 const RAIN=0.3;                       // 30分あたり「雨」とみなす mm
@@ -718,18 +723,17 @@ function drawChart(rows){
 
 /* ===== 表 ===== */
 function drawTable(rows){
-  const label=METRIC==="rain"?"雨量mm":METRIC==="solar"?"日射W/m²":"天候";
-  let h=`<table><tr><th>時刻</th><th>総合<br>${label}</th>${METRIC==="wx"?"<th>雲%</th>":""}<th>気温</th><th>風</th>${MODELS.map(m=>`<th>${m.name}<br>${label}</th>`).join("")}</tr>`;
+  const unit=METRIC==="rain"?"雨mm":METRIC==="solar"?"日射":"天候";
+  let h=`<table id="fc"><tr><th>時刻</th><th>気温<br>℃</th><th>風<br>m/s</th><th>総合<br>${unit}</th>${MODELS.map(m=>`<th>${m.name}</th>`).join("")}</tr>`;
+  const val=(v,k,hot)=>METRIC==="wx"
+    ? `<td style="color:${wxOf(k).c};font-weight:700">${wxOf(k).n}</td>`
+    : `<td class="${hot?(METRIC==="rain"?"hl":"hs"):""}">${METRIC==="rain"?f1(v):f0(v)}</td>`;
   for(const r of rows){
-    const cell=(v,k,cls)=>METRIC==="wx"
-      ? `<td style="color:${wxOf(k).c};font-weight:700">${wxOf(k).n}</td>`
-      : `<td class="${cls?(METRIC==="rain"?"hl":"hs"):""}">${METRIC==="rain"?f1(v):f0(v)}</td>`;
-    h+=`<tr><td class="lead">${r.min}</td>`+
-      cell(METRIC==="rain"?r.p:r.r,r.k,METRIC==="rain"?r.p>=RAIN:r.r>=400)+
-      (METRIC==="wx"?`<td>${f0(r.c)}</td>`:"")+
-      `<td>${f0(r.temp)}℃</td><td>${dirJa(r.d)} ${f0(r.s)}m</td>`+
+    h+=`<tr><td class="lead">${r.min}</td><td>${f0(r.temp)}</td>`+
+      `<td><span class="wd">${dirJa(r.d)}</span>${f0(r.s)}</td>`+
+      val(METRIC==="rain"?r.p:r.r,r.k,METRIC==="rain"?r.p>=RAIN:r.r>=400)+
       MODELS.map(m=>{const x=r.per[m.id];if(!x)return"<td>-</td>";
-        return cell(METRIC==="rain"?x.p:x.r,x.k,METRIC==="rain"?(x.p||0)>=RAIN:(x.r||0)>=400);}).join("")+"</tr>";
+        return val(METRIC==="rain"?x.p:x.r,x.k,METRIC==="rain"?(x.p||0)>=RAIN:(x.r||0)>=400);}).join("")+"</tr>";
   }
   $("table").innerHTML=h+"</table>";
 }
