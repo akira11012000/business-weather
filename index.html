@@ -551,20 +551,62 @@ function renderAcc(){
     $("accBody").innerHTML='<span class="err">アメダスの実測データを取得できなかったため、的中実績は計算できませんでした（総合予報は4モデルの単純平均になります）。</span>';
     return;
   }
-  let h=`<div class="note">比較地点：アメダス「${S.station.name}」（検索地点から約${Math.round(S.station.km)}km）${S.sunStation&&S.station&&S.sunStation.code!==S.station.code?`／日照は「${S.sunStation.name}」（約${Math.round(S.sunStation.km)}km）`:""}／過去8日間の7〜17時</div>
-  <div class="scroll"><table><tr><th>モデル</th><th>雨あり・なしの<br>的中率（前日予報）</th><th>実際の雨を<br>当てた数</th><th>日射の誤差<br>（日照との差）</th><th>気温の誤差<br>（前日）</th><th>気温の誤差<br>（2日前）</th><th>総合予報での<br>重み</th></tr>`;
-  const best=MODELS.filter(m=>S.acc[m.id][1].n).sort((a,b)=>S.weights[b.id]-S.weights[a.id])[0];
+  const pct=v=>v==null?"-":Math.round(v*100)+"%";
+  const r2=v=>v==null?"-":(Math.round(v*100)/100).toFixed(2);
+  const sa=m=>(S.solarAcc&&S.solarAcc[m.id]&&S.solarAcc[m.id].n>=12)?S.solarAcc[m.id]:null;
+  const sw=S.solarWeights||{};
+  const bestR=MODELS.slice().sort((x,y)=>(S.weights[y.id]||0)-(S.weights[x.id]||0))[0];
+  const bestS=MODELS.slice().sort((x,y)=>(sw[y.id]||0)-(sw[x.id]||0))[0];
+
+  let h=`<div class="note">比較地点：アメダス「${S.station.name}」（検索地点から約${Math.round(S.station.km)}km）${S.sunStation&&S.station&&S.sunStation.code!==S.station.code?`／日照は「${S.sunStation.name}」（約${Math.round(S.sunStation.km)}km）`:""}／過去8日間の7〜17時、前日に出された予報と比較</div>`;
+
+  // ① 成績（実測との比較結果）
+  h+=`<h3>① 各モデルの成績</h3><div class="scroll"><table><tr><th>モデル</th><th>雨の<br>的中率</th><th>雨量の誤差<br>mm</th><th>気温の誤差<br>℃</th><th>日射の誤差<br>（日照との差）</th></tr>`;
   for(const m of MODELS){
-    const a=S.acc[m.id][1],b=S.acc[m.id][2],w=S.weights[m.id]||0;
-    h+=`<tr><td>${m.name}${best&&best.id===m.id?" ★":""}</td>
-      <td>${a.hit==null?"-":Math.round(a.hit*100)+"%"}</td>
-      <td>${a.rainObs?a.rainCaught+"/"+a.rainObs+"時間":"雨なし"}</td>
-      <td>${(S.solarAcc&&S.solarAcc[m.id]&&S.solarAcc[m.id].n>=12)?(Math.round(S.solarAcc[m.id].mae*100)+"%")+`<br><span class="note">${S.solarAcc[m.id].n}時間</span>`:"-"}</td>
-      <td>${a.tmae==null?"-":"±"+f1(a.tmae)+"℃"}</td>
-      <td>${b.tmae==null?"-":"±"+f1(b.tmae)+"℃"}</td>
-      <td><div class="bar"><i style="width:${Math.round(w*100)}%"></i></div>${Math.round(w*100)}%</td></tr>`;
+    const a=S.acc[m.id][1], s2=sa(m);
+    h+=`<tr><td>${m.name}</td><td>${pct(a.hit)}</td><td>${r2(a.pmae)}</td><td>${r2(a.tmae)}</td>`+
+       `<td>${s2?pct(s2.mae)+`<br><span class="note">${s2.n}時間</span>`:"-"}</td></tr>`;
   }
-  h+=`</table></div><div class="note" style="margin-top:6px">★は最近この地点で最も成績が良いモデル。期間中に雨が少ないと、雨の的中率は差が出にくくなります。</div>`;
+  h+=`</table></div>`;
+
+  // ② 重みの計算（降雨量・天候）
+  const rawR={}; let sumR=0;
+  for(const m of MODELS){const a=S.acc[m.id][1];
+    rawR[m.id]=(a.n>=20&&a.tmae!=null&&a.hit!=null)?(a.hit/(0.5+a.tmae)+1/(0.3+a.pmae)):1; sumR+=rawR[m.id];}
+  h+=`<h3>② 降雨量・天候の重み</h3>
+   <div class="note">式：<b>的中率 ÷（0.5＋気温の誤差）＋ 1 ÷（0.3＋雨量の誤差）</b>　→　合計が100%になるように調整</div>
+   <div class="scroll"><table><tr><th>モデル</th><th>計算式（実際の数値）</th><th>点数</th><th>重み</th></tr>`;
+  for(const m of MODELS){
+    const a=S.acc[m.id][1], w=S.weights[m.id]||0, ok=(a.n>=20&&a.tmae!=null&&a.hit!=null);
+    h+=`<tr><td>${m.name}${bestR&&bestR.id===m.id?" ★":""}</td>`+
+      `<td style="white-space:normal;font-size:12px">${ok?`${r2(a.hit)}÷(0.5+${r2(a.tmae)}) ＋ 1÷(0.3+${r2(a.pmae)})`:"データ不足のため 1（均等）"}</td>`+
+      `<td>${r2(rawR[m.id])}</td>`+
+      `<td><div class="bar"><i style="width:${Math.round(w*100)}%"></i></div>${Math.round(w*100)}%</td></tr>`;
+  }
+  h+=`<tr><td class="note">合計</td><td></td><td>${r2(sumR)}</td><td>100%</td></tr></table></div>`;
+
+  // ③ 重みの計算（日射量）
+  const rawS={}; let sumS=0; let solarOk=false;
+  for(const m of MODELS){const s2=sa(m); rawS[m.id]=s2?1/(0.1+s2.mae):1; if(s2)solarOk=true; sumS+=rawS[m.id];}
+  h+=`<h3>③ 日射量の重み</h3>
+   <div class="note">式：<b>1 ÷（0.1＋日射の誤差）</b>　→　合計が100%になるように調整<br>
+   日射の誤差＝「予報の日射量 ÷ 快晴時の日射量」と「アメダスの日照時間 ÷ 60分」の差の平均</div>
+   <div class="scroll"><table><tr><th>モデル</th><th>計算式（実際の数値）</th><th>点数</th><th>重み</th></tr>`;
+  for(const m of MODELS){
+    const s2=sa(m), w=sw[m.id]||0;
+    h+=`<tr><td>${m.name}${solarOk&&bestS&&bestS.id===m.id?" ★":""}</td>`+
+      `<td style="white-space:normal;font-size:12px">${s2?`1÷(0.1+${r2(s2.mae)})`:"データ不足のため 1（均等）"}</td>`+
+      `<td>${r2(rawS[m.id])}</td>`+
+      `<td><div class="bar"><i style="width:${Math.round(w*100)}%"></i></div>${Math.round(w*100)}%</td></tr>`;
+  }
+  h+=`<tr><td class="note">合計</td><td></td><td>${r2(sumS)}</td><td>100%</td></tr></table></div>`;
+
+  // ④ 総合値の作り方
+  h+=`<h3>④ 総合値の作り方</h3>
+   <div class="note">各時刻の総合値は、上の重みを使った平均です。<br>
+   例：総合の雨量 ＝ ${MODELS.map(m=>`${Math.round((S.weights[m.id]||0)*100)}%×${m.name}`).join(" ＋ ")}<br>
+   降雨量と天候では②の重み、日射量では③の重みを使います。気温・風にも、表示中の指標と同じ重みを使います。</div>
+   <div class="note" style="margin-top:6px">★はその指標で最も成績が良いモデル。誤差が小さいほど点数が大きくなり、重みも大きくなります。式の中の0.5・0.3・0.1は、誤差がゼロに近いときに重みが極端に大きくなるのを防ぐための数値です。期間中に雨が少ないと、雨の的中率には差が出にくくなります。</div>`;
   $("accBody").innerHTML=h;
 }
 
@@ -823,7 +865,7 @@ function drawTable(rows){
 showPlace();renderRecent();load();loadRadar();
 
 /* ===== 更新の自動確認 ===== */
-const APP_VERSION="1.1 (2026-09-20)";
+const APP_VERSION="1.2 (2026-09-20)";
 (function(){
   const v=document.getElementById("verline"); if(v)v.textContent="バージョン "+APP_VERSION;
   const bar=document.getElementById("upbar");
