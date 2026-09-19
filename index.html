@@ -246,10 +246,10 @@ a{color:var(--accent)}
     <div class="src">
       <h3>実測（的中の判定に使用）</h3>
       <div class="org">気象庁 アメダス</div>
-      <div style="font-size:14px">ゴルフ場に最も近い観測所の、1時間ごとの雨量と気温を使っています。</div>
+      <div style="font-size:14px">検索した観測地点に最も近いアメダスの、1時間ごとの雨量・気温・日照時間を使っています。</div>
       <div class="note"><a href="https://www.jma.go.jp/bosai/amedas/" target="_blank" rel="noopener">jma.go.jp/bosai/amedas</a></div>
     </div>
-    <div class="note">※細かさや更新回数はおおよその値で、各機関の改良によって変わることがあります。どのモデルがこのゴルフ場で当たるかは、上の「的中の記録」で確かめてください。</div>
+    <div class="note">※細かさや更新回数はおおよその値で、各機関の改良によって変わることがあります。どのモデルがこの観測地点で当たるかは、上の「この地点での的中実績」で確かめてください。</div>
   </div>
   <div class="card note">
     <b>見かた・ご注意</b><br>
@@ -873,7 +873,7 @@ function drawTable(rows){
 showPlace();renderRecent();load();loadRadar();
 
 /* ===== 更新の自動確認 ===== */
-const APP_VERSION="1.3 (2026-09-20)";
+const APP_VERSION="1.4 (2026-09-20)";
 (function(){
   const v=document.getElementById("verline"); if(v)v.textContent="バージョン "+APP_VERSION;
   const bar=document.getElementById("upbar");
